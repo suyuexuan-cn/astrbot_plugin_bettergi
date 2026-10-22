@@ -1,4 +1,15 @@
 
+2.1.7: 辅助程序改为绿色免安装版 26.10.22
+
+- `assistant/` 目录替换为 `bettergi_assistant/`，随包内置 Python 3.13 运行环境
+- 目标电脑无需安装 Python、无需联网装依赖，解压即用
+- 启动入口改为 `启动.bat`，调用内置 `python\python.exe`；缺少 python 目录时给出明确提示
+- `launcher.py` 新增绿色版检测：跳过 pip 安装，菜单 10 由「安装 / 修复依赖」改为「检查运行环境」
+- 状态页新增「运行环境」一行，显示内置 Python 版本
+- 新增 `使用说明.txt`：目录结构、首次使用、菜单说明、命令行用法、常见问题
+- 新增 `bettergi_assistant/python/` 到 .gitignore，运行环境只在 Releases 附件分发，不进版本库
+- README 改为从 Releases 下载 zip 的安装流程
+
 2.1.6: 启动器缺失依赖时可自动安装 26.10.22
 
 - 新增启动前依赖自检：缺少 httpx / psutil / pyyaml 时提示并可直接自动安装

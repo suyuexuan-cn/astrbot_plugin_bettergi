@@ -42,6 +42,10 @@ PID_FILE = HERE / "assistant.pid"
 LOG_FILE = HERE / "assistant.log"
 REQUIREMENTS = HERE / "requirements.txt"
 
+# 绿色版：解释器与依赖都在 python\ 目录里，目标机器不需要装 Python
+PY_HOME = HERE / "python"
+BUNDLED = (PY_HOME / "python.exe").exists()
+
 TASK_NAME = "BetterGIAssistant"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -381,6 +385,12 @@ def _print_tail(text: str, limit: int = 12) -> None:
 
 
 def _pip_ready() -> bool:
+    if BUNDLED:
+        err("当前是绿色免安装版，内置运行环境不含 pip")
+        info("依赖已随包内置，正常不需要再安装")
+        info("如文件确实损坏，请重新解压完整的压缩包")
+        return False
+
     success, _ = _pip_call(
         [sys.executable, "-m", "pip", "--version"], timeout=60
     )
@@ -436,6 +446,9 @@ def install_missing(ask_first: bool = True) -> bool:
         return True
 
     err(f"缺少依赖: {', '.join(missing)}")
+    if BUNDLED:
+        err("绿色版内置运行环境不完整，请重新解压完整压缩包")
+        return False
     if ask_first and sys.stdin.isatty():
         if ask("现在自动安装? (Y/n)", "y").lower() not in ("y", "yes"):
             info(f"可手动执行: {sys.executable} -m pip install -r {REQUIREMENTS.name}")
@@ -955,6 +968,7 @@ def print_summary() -> None:
 
     missing = missing_modules()
     deps = "缺少 " + ", ".join(missing) + "（菜单 10 安装）" if missing else "完整"
+    runtime = "内置 Python 3.13（免安装）" if BUNDLED else f"系统 Python {sys.version.split()[0]}"
 
     print(f"\n{LINE}")
     print("  BetterGI 远程辅助程序（客户端模式）")
@@ -964,6 +978,7 @@ def print_summary() -> None:
     print(f"  API 密钥     : {key}")
     print(f"  后台进程     : {process}")
     print(f"  开机自启     : {autostart}")
+    print(f"  运行环境     : {runtime}")
     print(f"  运行依赖     : {deps}")
     print(LINE)
 
@@ -981,6 +996,10 @@ MENU = [
     ("10", "安装 / 修复依赖（httpx、psutil、pyyaml）"),
     ("0", "退出"),
 ]
+
+if BUNDLED:
+    # 绿色版依赖已内置，菜单 10 改为环境自检
+    MENU[-2] = ("10", "检查运行环境（绿色免安装版，依赖已内置）")
 
 
 def menu() -> int:

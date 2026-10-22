@@ -2,6 +2,6 @@ name: astrbot_plugin_bettergi
 display_name: BetterGI 远程控制
 desc: BetterGI(更好的原神) 远程控制插件，支持本地/远程模式、Webhook 事件通知、定时任务
 short_desc: 远程控制 BetterGI，支持 Webhook 事件通知和定时任务
-version: 2.1.6
+version: 2.1.7
 author: 苏月晅
 repo: https://github.com/yuexuan6699/astrbot_plugin_bettergi

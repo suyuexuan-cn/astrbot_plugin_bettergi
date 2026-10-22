@@ -208,3 +208,11 @@ __marimo__/
 
 # WorkBuddy 本地项目数据（记忆、缓存）
 .workbuddy/
+
+# 绿色版内置 Python 运行环境（随 Releases 分发，不进版本库）
+bettergi_assistant/python/
+bettergi_assistant/assistant.log
+bettergi_assistant/assistant.pid
+
+# 打包产物
+dist/

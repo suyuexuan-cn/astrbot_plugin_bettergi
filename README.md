@@ -110,7 +110,7 @@ Webhook 复用 AstrBot 主端口，无需额外开端口。请求需携带 AstrB
 远程模式无需在插件中额外配置，认证统一使用 AstrBot API 密钥：
 
 - **插件端** - 无需配置，路由注册后由 AstrBot 统一认证
-- **辅助程序** - 在 `assistant/config.yaml` 中填写 `api_key`
+- **辅助程序** - 在 `bettergi_assistant/config.yaml` 中填写 `api_key`
 
 API 密钥创建方法见「使用方法 → Webhook 配置」，同一个密钥可同时用于 Webhook 和远程模式。
 
@@ -199,20 +199,29 @@ BetterGI 支持的 Webhook 事件类型（可在配置中勾选需要通知的�
 
 远程模式与 Webhook 共用同一个 API 密钥，创建方法见「使用方法 → Webhook 配置」第 1 步。
 
-### 2. 安装辅助程序依赖
+### 2. 下载辅助程序（绿色免安装版，推荐）
 
-在 BetterGI 所在电脑上：
+到 [Releases](https://github.com/yuexuan6699/astrbot_plugin_bettergi/releases) 下载最新的 `bettergi_assistant_v*.zip`，解压到任意目录（例如 `D:\BetterGI-Assistant`）。
 
-```bash
-cd assistant
-pip install -r requirements.txt
+解压后的目录结构：
+
+```
+bettergi_assistant/
+├─ 启动.bat        双击运行入口
+├─ 使用说明.txt
+├─ config.yaml     配置文件
+├─ launcher.py     功能菜单
+├─ server.py       辅助程序本体
+└─ python/         内置 Python 3.13 运行环境（请勿删除或改名）
 ```
 
-也可以跳过这一步，直接运行 `launcher.py`，它会检测缺失依赖并询问是否自动安装。
+目标电脑**不需要安装 Python**，也**不需要联网装依赖**，`httpx` / `psutil` / `pyyaml` 都在 `python\Lib\site-packages` 里。整个目录换盘符、换路径都不影响运行。
+
+> 想用自己电脑上的 Python 也可以：只取 `launcher.py` / `server.py` / `requirements.txt`，执行 `python launcher.py`，首次启动会自动检测并安装依赖。
 
 ### 3. 配置 config.yaml
 
-编辑 `assistant/config.yaml`：
+编辑 `bettergi_assistant/config.yaml`：
 
 ```yaml
 # AstrBot 的访问地址（必填）
@@ -232,10 +241,11 @@ log_level: "INFO"
 
 ### 4. 启动辅助程序
 
-双击 `运行功能.bat`（Windows 下只负责调用 `launcher.py`），或直接执行：
+双击目录里的 `启动.bat`，或用命令行：
 
 ```bash
-python launcher.py
+cd bettergi_assistant
+python\python.exe launcher.py
 ```
 
 进入交互菜单：
@@ -251,7 +261,7 @@ python launcher.py
 | 7. 测试连接 AstrBot | 调用插件健康检查接口，校验地址与密钥 |
 | 8. 修改配置 | 交互式修改 `config.yaml`，保留原有注释 |
 | 9. 查看运行日志 | 显示 `assistant.log` 末尾内容 |
-| 10. 安装 / 修复依赖 | 自动安装 `httpx` / `psutil` / `pyyaml` |
+| 10. 检查运行环境 | 绿色版：检查内置解释器与依赖是否完整（源码模式为「安装 / 修复依赖」） |
 | 0. 退出 | 退出菜单 |
 
 也可以直接用命令行参数，便于脚本调用和排查问题：
@@ -262,17 +272,17 @@ python launcher.py
 | `--daemon` | 后台启动 |
 | `--stop` | 停止后台进程 |
 | `--install` / `--uninstall` | 注册 / 取消开机自启 |
-| `--status` | 查看配置、进程、依赖与自启状态 |
+| `--status` | 查看配置、进程、运行环境与自启状态 |
 | `--test` | 测试连接 AstrBot |
 | `--config` | 交互式修改配置 |
 | `--log` | 查看最近日志 |
-| `--deps` | 检查并安装依赖 |
+| `--deps` | 检查并安装依赖（绿色版下仅做环境检查） |
 
 依赖处理说明：
 
-- 启动时先检查 `httpx` / `psutil` / `pyyaml`，缺失会询问 `现在自动安装? (Y/n)`，回车即安装。
-- 安装时先走默认 PyPI 源，失败自动换清华镜像重试，再失败则加 `--user` 安装；当前 Python 没有 pip 时会先用 `ensurepip` 修复。
-- 如果拒绝安装，菜单仍可正常使用：配置改用内置简易解析读取（支持注释、引号、裸值），只是缺少联网与进程管理能力，菜单 10 可随时补装。
+- **绿色版**：依赖已内置，不需要安装，菜单 10 只检查 `python\python.exe` 与三个包是否完整；缺文件时提示重新解压完整压缩包。
+- **源码运行**：启动时先检查 `httpx` / `psutil` / `pyyaml`，缺失会询问 `现在自动安装? (Y/n)`，回车即安装；默认 PyPI 源失败自动换清华镜像，再失败加 `--user`；当前 Python 没有 pip 时先用 `ensurepip` 修复。
+- 没有 `pyyaml` 时配置改用内置简易解析读取（支持注释、引号、裸值），菜单与配置向导仍可用。
 
 ### 5. 配置插件
 
@@ -284,16 +294,15 @@ python launcher.py
 
 ### 日志
 
-辅助程序运行日志保存在 `assistant/assistant.log`，包含所有连接状态和命令执行记录。
+辅助程序运行日志保存在 `bettergi_assistant/assistant.log`，包含所有连接状态和命令执行记录。
 
 ## 安装和依赖
 
 插件无额外依赖（Webhook 和远程控制均复用 AstrBot 主端口）。
 
-辅助程序依赖（远程模式，手动安装）：
-- httpx >= 0.24.0
-- psutil >= 5.9.0
-- pyyaml >= 6.0
+辅助程序依赖（远程模式）：
+- 绿色版（Releases 下载）：内置 Python 3.13 + `httpx` / `psutil` / `pyyaml`，无需安装任何东西
+- 源码运行：`httpx >= 0.24.0`、`psutil >= 5.9.0`、`pyyaml >= 6.0`，`launcher.py` 会自动检测并安装
 
 ## 作者
 
