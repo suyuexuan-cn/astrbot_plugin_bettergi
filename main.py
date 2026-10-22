@@ -18,7 +18,7 @@ from .service import (
 )
 
 
-@register("bettergi", "BetterGI", "BetterGI 远程控制插件", "2.1.4")
+@register("bettergi", "BetterGI", "BetterGI 远程控制插件", "2.1.5")
 class BetterGIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

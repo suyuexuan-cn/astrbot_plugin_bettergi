@@ -1,4 +1,15 @@
 
+2.1.5: 辅助程序启动器改为 Python 实现 26.10.22
+
+- 新增 assistant/launcher.py，原 运行功能.bat 的全部功能迁移到 Python
+- 修复 bat 用 findstr 解析 YAML 易被缩进、引号、URL 冒号截断的问题，改用 yaml 安全解析
+- 修复 schtasks 注册时引号嵌套在含空格路径下易失败的问题，改为参数列表调用，失败自动回退到当前用户注册表 Run 项
+- 开机自启支持计划任务与注册表双通道，查看/取消时两处都处理
+- 连接测试由 PowerShell 改为 httpx，密钥走 Authorization 头，不再拼进 URL
+- 新增后台启动/停止、依赖自动安装、配置向导（保留原注释）、日志查看
+- 支持命令行参数：--start / --daemon / --stop / --install / --uninstall / --status / --test / --config / --log
+- 运行功能.bat 精简为入口，仅负责调用 launcher.py
+
 2.1.4: 修复运行时无法用指令停止 26.10.22
 
 - 本地模式停止不再只认插件启动的子进程：BetterGI 单实例转发、插件热重载、手动启动时子进程已退出但任务仍在跑，旧逻辑会误报“当前没有正在运行的任务”
