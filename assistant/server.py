@@ -55,20 +55,115 @@ def find_bettergi_exe(bettergi_dir: str) -> str | None:
     return None
 
 
-def is_bettergi_running(bettergi_dir: str) -> tuple[bool, int | None]:
-    """检查 BetterGI 是否正在运行。"""
+GRACE_TIMEOUT = 5.0
+
+
+def find_bettergi_pids(bettergi_dir: str) -> list[int]:
+    """查找正在运行的 BetterGI 进程 PID 列表。
+
+    不只认启动时拿到的 PID：BetterGI 单实例运行时，命令行启动的新进程
+    可能把参数转交给已运行实例后自行退出，任务仍在跑。
+    """
     exe_path = find_bettergi_exe(bettergi_dir)
     if not exe_path:
-        return False, None
+        return []
 
     exe_name = os.path.basename(exe_path).lower()
-    for proc in psutil.process_iter(["pid", "name"]):
+    target_dir = os.path.normcase(os.path.abspath(bettergi_dir))
+    pids: list[int] = []
+
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
         try:
-            if proc.info["name"].lower() == exe_name:
-                return True, proc.info["pid"]
+            if (proc.info["name"] or "").lower() != exe_name:
+                continue
+            exe = proc.info.get("exe") or ""
+            if exe and not os.path.normcase(exe).startswith(target_dir):
+                continue
+            pids.append(proc.info["pid"])
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    return False, None
+        except Exception:
+            continue
+
+    return pids
+
+
+def is_bettergi_running(bettergi_dir: str) -> tuple[bool, int | None]:
+    """检查 BetterGI 是否正在运行。"""
+    pids = find_bettergi_pids(bettergi_dir)
+    if not pids:
+        return False, None
+    return True, pids[0]
+
+
+def kill_process_tree(proc: psutil.Process, graceful: bool = True) -> bool:
+    """结束进程及其子进程，返回进程是否已退出。"""
+    try:
+        children = proc.children(recursive=True)
+    except psutil.NoSuchProcess:
+        return True
+    except Exception:
+        children = []
+
+    targets = [proc] + children
+
+    if graceful:
+        for p in targets:
+            try:
+                p.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            except Exception:
+                pass
+        _, alive = psutil.wait_procs(targets, timeout=GRACE_TIMEOUT)
+        if not alive:
+            return True
+        targets = alive
+
+    for p in targets:
+        try:
+            p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        except Exception:
+            pass
+    _, alive = psutil.wait_procs(targets, timeout=3)
+    return not alive
+
+
+def stop_bettergi(bettergi_dir: str) -> tuple[bool, str]:
+    """停止 BetterGI 进程（含子进程树）。"""
+    pids = find_bettergi_pids(bettergi_dir)
+    if not pids:
+        return True, "未运行"
+
+    stopped = 0
+    failed: list[str] = []
+
+    for pid in pids:
+        try:
+            proc = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            stopped += 1
+            continue
+        except Exception as e:
+            failed.append(f"{pid}({e})")
+            continue
+
+        try:
+            if kill_process_tree(proc):
+                stopped += 1
+            else:
+                failed.append(str(pid))
+        except Exception as e:
+            failed.append(f"{pid}({e})")
+
+    if failed:
+        logging.error("停止失败: %s", ", ".join(failed))
+        return False, f"部分进程停止失败: {', '.join(failed)}"
+
+    logging.info("BetterGI 已停止 %d 个进程", stopped)
+    return True, f"已停止 {stopped} 个进程"
 
 
 def run_bettergi(bettergi_dir: str, args: list[str]) -> tuple[bool, str]:
@@ -105,28 +200,6 @@ def run_bettergi(bettergi_dir: str, args: list[str]) -> tuple[bool, str]:
         return False, "权限不足，可能需要管理员权限"
     except Exception as e:
         return False, f"启动失败: {e}"
-
-
-def stop_bettergi(bettergi_dir: str) -> tuple[bool, str]:
-    """停止 BetterGI 进程。"""
-    running, pid = is_bettergi_running(bettergi_dir)
-    if not running:
-        return True, "未运行"
-
-    try:
-        proc = psutil.Process(pid)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except psutil.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=3)
-        logging.info("BetterGI 已停止，PID: %d", pid)
-        return True, "已停止"
-    except psutil.NoSuchProcess:
-        return True, "进程不存在"
-    except Exception as e:
-        return False, f"停止失败: {e}"
 
 
 def report_result(

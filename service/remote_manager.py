@@ -4,7 +4,12 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 
-from astrbot.api import logger
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger("bettergi")
 
 HEARTBEAT_INTERVAL = 30.0
 
@@ -94,7 +99,7 @@ class RemoteConnectionManager:
                     break
             logger.info("[BetterGI-Remote] 辅助程序已断开")
 
-    async def submit_task(self, args: list[str], timeout: float = 60) -> tuple[bool, str]:
+    async def submit_task(self, args: list[str], timeout: float = 20) -> tuple[bool, str]:
         """提交任务并等待结果。返回 (成功, 消息)。
 
         辅助程序启动 BetterGI 后立即上报，通常几秒内返回，
@@ -152,12 +157,16 @@ class RemoteConnectionManager:
         pending.event.set()
         return True
 
-    async def submit_stop(self) -> tuple[bool, str]:
-        """发送停止指令。"""
+    async def submit_stop(self, timeout: float = 15) -> tuple[bool, str]:
+        """发送停止指令并等待辅助程序确认。
+
+        必须保证 pending 一定被清理：否则超时后的结果会挂在表里，
+        下次停止又会等待到超时，表现为"怎么发都关不掉"。
+        """
         if not self._connected:
             return False, "辅助程序未连接"
 
-        task_id = f"stop_{int(time.time())}"
+        task_id = f"stop_{uuid.uuid4()}"
         pending = PendingTask(task_id, [])
         self._pending_tasks[task_id] = pending
 
@@ -168,11 +177,22 @@ class RemoteConnectionManager:
                 "timestamp": time.time(),
             })
 
-            await asyncio.wait_for(pending.event.wait(), timeout=30)
+            await asyncio.wait_for(pending.event.wait(), timeout=timeout)
 
             if pending.error:
                 return False, pending.error
+            if pending.result is not None and not pending.result.get("success", False):
+                return False, pending.result.get("message", "") or "辅助程序停止失败"
             return True, "已停止"
         except asyncio.TimeoutError:
+            logger.warning("[BetterGI-Remote] 停止指令未收到确认，task_id=%s", task_id)
+            return (
+                False,
+                "已下发停止指令，但辅助程序 15 秒内未确认"
+                "（可能已离线或连接假死，请检查辅助程序）",
+            )
+        except Exception as e:
+            logger.error("[BetterGI-Remote] 停止指令下发失败: %s", e)
+            return False, f"停止指令下发失败: {e}"
+        finally:
             self._pending_tasks.pop(task_id, None)
-            return False, "停止超时"

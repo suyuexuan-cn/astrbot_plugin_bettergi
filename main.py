@@ -18,7 +18,7 @@ from .service import (
 )
 
 
-@register("bettergi", "BetterGI", "BetterGI 远程控制插件", "2.1.3")
+@register("bettergi", "BetterGI", "BetterGI 远程控制插件", "2.1.4")
 class BetterGIPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -88,6 +88,18 @@ class BetterGIPlugin(Star):
             "autoeat.info": "autoeat_info",
             "js.custom": "js_custom",
             "js.error": "js_error",
+        }
+
+        # 任务结束类事件：收到后清空“运行中”标记，避免状态一直卡在运行中
+        self._end_events: set[str] = {
+            "dragon.end",
+            "group.end",
+            "task.cancel",
+            "task.error",
+            "domain.end",
+            "tcg.end",
+            "album.end",
+            "autoeat.end",
         }
 
     def _init_config(self) -> None:
@@ -276,8 +288,9 @@ class BetterGIPlugin(Star):
         matched = self._match_cmd(sub, self._cmd_stop)
         if matched is not None:
             event.stop_event()
-            logger.debug("[BetterGI-Msg] 匹配到 stop: alias='%s'", matched)
-            async for result in self._handle_stop(event):
+            cmd_arg = sub[len(matched) :].strip()
+            logger.debug("[BetterGI-Msg] 匹配到 stop: alias='%s', arg='%s'", matched, cmd_arg)
+            async for result in self._handle_stop(event, cmd_arg):
                 yield result
             return
 
@@ -379,18 +392,22 @@ class BetterGIPlugin(Star):
             return False, detail
         return True, "OK"
 
-    async def _handle_stop(self, event: AstrMessageEvent):
-        logger.debug("[BetterGI-Stop] 尝试停止任务")
-        stopped = await self._runner.stop()
-        logger.debug("[BetterGI-Stop] 停止结果: %s", stopped)
+    async def _handle_stop(self, event: AstrMessageEvent, arg: str = ""):
+        force = arg in ("强制", "强停", "强制停止", "force", "f", "-f")
+        logger.debug("[BetterGI-Stop] 尝试停止任务 (force=%s, arg='%s')", force, arg)
+
+        stopped, message = await self._runner.stop(force=force)
+        logger.debug("[BetterGI-Stop] 停止结果: stopped=%s, message=%s", stopped, message)
+
         if stopped:
-            yield event.plain_result("✅ BetterGI 任务已停止")
+            yield event.plain_result(f"✅ {message}")
+            return
+
+        detail = message or getattr(self._runner, "last_error", "")
+        if detail:
+            yield event.plain_result(f"❌ 停止失败: {detail}")
         else:
-            detail = getattr(self._runner, "last_error", "")
-            if detail:
-                yield event.plain_result(f"❌ 停止失败: {detail}")
-            else:
-                yield event.plain_result("❌ 当前没有正在运行的任务")
+            yield event.plain_result("❌ 当前没有正在运行的任务")
 
     async def _handle_status(self, event: AstrMessageEvent):
         status = await self._runner.get_status()
@@ -414,8 +431,14 @@ class BetterGIPlugin(Star):
         if current:
             lines.append(f"🔹 当前命令: {current}")
 
-        if status.get("pid"):
+        pids = status.get("pids") or []
+        if pids:
+            pid_text = ", ".join(str(p) for p in pids)
+            lines.append(f"🔹 BetterGI 进程: 运行中 (PID: {pid_text})")
+        elif status.get("pid"):
             lines.append(f"🔹 进程PID: {status['pid']}")
+        elif mode == "local" and not status.get("process_running"):
+            lines.append("🔹 BetterGI 进程: 未运行")
 
         webhook_running = self._webhook_server.is_running
         lines.append(f"🔹 Webhook: {'已启动' if webhook_running else '未启动'}")
@@ -486,6 +509,12 @@ class BetterGIPlugin(Star):
         result = event_data.get("result", "")
         timestamp = event_data.get("timestamp", "")
         screenshot = event_data.get("screenshot", "")
+
+        if event_type in self._end_events:
+            mark_idle = getattr(self._runner, "mark_idle", None)
+            if callable(mark_idle):
+                mark_idle()
+            logger.debug("[BetterGI-Webhook] 结束事件 %s，已清空运行标记", event_type)
 
         logger.info("[BetterGI] Webhook 事件: %s | %s | %s", event_type, result, message)
         logger.debug("[BetterGI-Webhook] screenshot: %s", f"有({len(screenshot)}字符)" if screenshot else "无")
@@ -613,7 +642,8 @@ class BetterGIPlugin(Star):
             f"  {p}{run} 选择   - 查看可用命令列表\n"
             f"  {p}{run} 序号   - 运行指定序号的命令\n"
             f"  {p}{status}      - 查看运行状态\n"
-            f"  {p}{stop}        - 停止当前任务\n"
+            f"  {p}{stop}        - 停止当前任务（含残留进程）\n"
+            f"  {p}{stop} 强制   - 不等待优雅退出，直接强杀进程\n"
             f"  {p}{log}        - 查看最近事件日志\n"
             f"  {p}{log} 清除   - 清除事件记录\n"
             f"  {p}{bind}        - 绑定通知会话\n"
