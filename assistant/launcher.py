@@ -19,11 +19,13 @@
     python launcher.py --status
     python launcher.py --test
     python launcher.py --config
+    python launcher.py --deps
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -121,22 +123,80 @@ def prompt_value(prompt_text: str, current: str = "") -> str:
 # --------------------------------------------------------------------------
 
 
+_yaml_warned = False
+
+
+def _yaml_module():
+    """返回 yaml 模块，未安装返回 None。"""
+    try:
+        return importlib.import_module("yaml")
+    except ImportError:
+        return None
+
+
+_QUOTED = re.compile(r'^("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')')
+
+
+def _simple_yaml_load(text: str) -> dict:
+    """没有 pyyaml 时的简易解析，够读 config.yaml 这种单层键值。
+
+    只处理 `key: value`，忽略注释与空行；值支持双引号（按 JSON 转义还原）、
+    单引号与裸值。不支持的复杂结构一律跳过，不会抛异常。
+    """
+    data: dict = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("- "):
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*:\s*(.*)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).strip()
+
+        quoted = _QUOTED.match(value)
+        if quoted:
+            token = quoted.group(1)
+            if token.startswith('"'):
+                try:
+                    data[key] = json.loads(token)
+                except Exception:
+                    data[key] = token[1:-1]
+            else:
+                data[key] = token[1:-1]
+            continue
+
+        data[key] = value.split(" #")[0].strip()
+    return data
+
+
 def load_config() -> dict:
-    """读取 config.yaml，失败返回空字典。"""
+    """读取 config.yaml，失败返回空字典。
+
+    没有 pyyaml 时退回内置简易解析，保证菜单仍然可用。
+    """
+    global _yaml_warned
+
     if not CONFIG.exists():
         return {}
     try:
-        import yaml
-    except ImportError:
-        err("缺少 pyyaml，无法读取配置，请先安装依赖")
-        return {}
-    try:
-        with open(CONFIG, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        return data if isinstance(data, dict) else {}
+        text = CONFIG.read_text(encoding="utf-8")
     except Exception as e:
-        err(f"配置文件解析失败: {e}")
+        err(f"读取配置文件失败: {e}")
         return {}
+
+    yaml = _yaml_module()
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text) or {}
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            err(f"配置文件解析失败: {e}")
+            return {}
+
+    if not _yaml_warned:
+        _yaml_warned = True
+        warn("未安装 pyyaml，已用内置简易解析读取配置（菜单 10 可安装）")
+    return _simple_yaml_load(text)
 
 
 def _yaml_literal(value: str) -> str:
@@ -279,51 +339,143 @@ def ensure_config() -> bool:
 
 REQUIRED_MODULES = (("httpx", "httpx"), ("psutil", "psutil"), ("yaml", "pyyaml"))
 
+# 国内直连 PyPI 经常超时，默认源失败后按顺序换源重试
+PYPI_MIRRORS = ("https://pypi.tuna.tsinghua.edu.cn/simple",)
+
 
 def missing_modules() -> list[str]:
     missing = []
     for module, package in REQUIRED_MODULES:
         try:
-            __import__(module)
+            importlib.import_module(module)
         except ImportError:
             missing.append(package)
     return missing
 
 
-def check_deps(auto_install: bool = True) -> bool:
-    """检查依赖，缺失时询问是否安装。"""
+def _pip_call(args: list[str], timeout: int) -> tuple[bool, str]:
+    """执行 pip，返回 (是否成功, 输出)。"""
+    kwargs: dict = {"capture_output": True, "timeout": timeout}
+    if os.name == "nt":
+        kwargs.update({"text": True, "encoding": "mbcs", "errors": "replace"})
+    else:
+        kwargs.update({"text": True, "errors": "replace"})
+    try:
+        result = subprocess.run(args, **kwargs)
+    except FileNotFoundError:
+        return False, "找不到可执行文件"
+    except subprocess.TimeoutExpired:
+        return False, f"超时（{timeout} 秒）"
+    except Exception as e:
+        return False, str(e)
+    output = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0, output
+
+
+def _print_tail(text: str, limit: int = 12) -> None:
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return
+    for line in lines[-limit:]:
+        info(line.rstrip())
+
+
+def _pip_ready() -> bool:
+    success, _ = _pip_call(
+        [sys.executable, "-m", "pip", "--version"], timeout=60
+    )
+    if success:
+        return True
+
+    warn("当前 Python 没有可用的 pip，尝试用 ensurepip 修复")
+    success, output = _pip_call(
+        [sys.executable, "-m", "ensurepip", "--upgrade"], timeout=180
+    )
+    if not success:
+        _print_tail(output)
+        err(f"无法修复 pip，请重装 Python 并勾选 pip: {sys.executable}")
+        return False
+    return True
+
+
+def run_pip_install(packages: list[str]) -> bool:
+    """安装依赖：默认源 → 清华镜像 → 镜像 + 当前用户目录。"""
+    if not _pip_ready():
+        return False
+
+    targets = ["-r", str(REQUIREMENTS)] if REQUIREMENTS.exists() else list(packages)
+
+    attempts: list[tuple[str | None, list[str]]] = [(None, [])]
+    for mirror in PYPI_MIRRORS:
+        attempts.append((mirror, []))
+        attempts.append((mirror, ["--user"]))
+
+    for mirror, extra in attempts:
+        args = [
+            sys.executable, "-m", "pip", "install",
+            "--disable-pip-version-check", *extra, *targets,
+        ]
+        if mirror:
+            args += ["-i", mirror]
+            warn(f"改用镜像源重试: {mirror}")
+        info("执行: " + " ".join(args))
+        success, output = _pip_call(args, timeout=600)
+        if success:
+            importlib.invalidate_caches()
+            return True
+        _print_tail(output)
+
+    return False
+
+
+def install_missing(ask_first: bool = True) -> bool:
+    """安装缺失依赖。ask_first=True 时先询问一次。"""
     missing = missing_modules()
     if not missing:
+        ok("依赖完整")
         return True
 
     err(f"缺少依赖: {', '.join(missing)}")
-    if not auto_install or not sys.stdin.isatty():
+    if ask_first and sys.stdin.isatty():
+        if ask("现在自动安装? (Y/n)", "y").lower() not in ("y", "yes"):
+            info(f"可手动执行: {sys.executable} -m pip install -r {REQUIREMENTS.name}")
+            return False
+
+    if run_pip_install(missing):
+        # pip 装完的目录需要刷新导入缓存，否则同进程内可能仍导入不到
+        importlib.invalidate_caches()
+        still = missing_modules()
+        if still:
+            err(f"安装后仍无法导入: {', '.join(still)}（请关闭窗口重新打开）")
+            return False
+        ok(f"依赖已安装: {', '.join(missing)}")
+        return True
+
+    err("自动安装失败，可能是网络无法访问 PyPI")
+    info(f"手动执行: {sys.executable} -m pip install -r {REQUIREMENTS.name}")
+    info("或下载 wheel 后离线安装: pip install 包文件名.whl")
+    return False
+
+
+def bootstrap_deps() -> None:
+    """启动时先处理依赖，避免后面读配置、联网时才报错。"""
+    if not missing_modules():
+        return
+    print(f"\n{LINE}\n  依赖检查\n{LINE}")
+    info("httpx 用于联网、psutil 用于管理进程、pyyaml 用于读取配置")
+    if not install_missing(ask_first=True):
+        warn("可稍后在菜单选择 10 重新安装")
+
+
+def check_deps(auto_install: bool = True) -> bool:
+    """启动辅助程序前的依赖检查。"""
+    if not missing_modules():
+        return True
+    if not auto_install:
+        err(f"缺少依赖: {', '.join(missing_modules())}")
         info(f"请执行: {sys.executable} -m pip install -r {REQUIREMENTS.name}")
         return False
-
-    if ask("现在安装? (Y/n)", "y").lower() not in ("y", "yes"):
-        return False
-
-    cmd = [sys.executable, "-m", "pip", "install", *missing]
-    if REQUIREMENTS.exists():
-        cmd = [sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS)]
-    info("执行: " + " ".join(cmd))
-    try:
-        code = subprocess.call(cmd)
-    except Exception as e:
-        err(f"安装失败: {e}")
-        return False
-
-    if code != 0:
-        err("安装失败，请手动执行上面的命令")
-        return False
-
-    still = missing_modules()
-    if still:
-        err(f"安装后仍缺少: {', '.join(still)}（可能需要重启终端）")
-        return False
-    ok("依赖已安装")
-    return True
+    return install_missing(ask_first=True)
 
 
 # --------------------------------------------------------------------------
@@ -801,6 +953,9 @@ def print_summary() -> None:
         marks.append("注册表")
     autostart = " / ".join(marks) if marks else "未注册"
 
+    missing = missing_modules()
+    deps = "缺少 " + ", ".join(missing) + "（菜单 10 安装）" if missing else "完整"
+
     print(f"\n{LINE}")
     print("  BetterGI 远程辅助程序（客户端模式）")
     print(LINE)
@@ -809,6 +964,7 @@ def print_summary() -> None:
     print(f"  API 密钥     : {key}")
     print(f"  后台进程     : {process}")
     print(f"  开机自启     : {autostart}")
+    print(f"  运行依赖     : {deps}")
     print(LINE)
 
 
@@ -822,6 +978,7 @@ MENU = [
     ("7", "测试连接 AstrBot"),
     ("8", "修改配置"),
     ("9", "查看运行日志"),
+    ("10", "安装 / 修复依赖（httpx、psutil、pyyaml）"),
     ("0", "退出"),
 ]
 
@@ -867,6 +1024,10 @@ def menu() -> int:
             pause()
         elif choice == "9":
             show_log()
+            pause()
+        elif choice == "10":
+            print(f"\n{LINE}\n  安装 / 修复依赖\n{LINE}")
+            install_missing(ask_first=False)
             pause()
         else:
             warn("无效的选项")
@@ -917,8 +1078,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test", action="store_true", help="测试连接 AstrBot")
     parser.add_argument("--config", action="store_true", help="交互式修改配置")
     parser.add_argument("--log", action="store_true", help="查看最近日志")
+    parser.add_argument("--deps", action="store_true", help="检查并安装依赖")
     args = parser.parse_args(argv)
 
+    if args.deps:
+        return 0 if install_missing(ask_first=False) else 1
     if args.start:
         return start_foreground()
     if args.daemon:
@@ -940,6 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
         show_log(80)
         return 0
 
+    bootstrap_deps()
     return menu()
 
 
