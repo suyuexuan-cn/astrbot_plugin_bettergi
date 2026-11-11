@@ -1,4 +1,9 @@
 
+2.1.8: 仓库地址迁移至 suyuexuan-cn 26.11.11
+
+- `metadata.yaml` 的 `repo` 与 README 作者主页链接迁移到新账号 `suyuexuan-cn`
+- 同步 `main.py` 注册版本号
+
 2.1.7: 辅助程序改为绿色免安装版 26.10.22
 
 - `assistant/` 目录替换为 `bettergi_assistant/`，随包内置 Python 3.13 运行环境
